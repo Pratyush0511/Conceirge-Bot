@@ -1,0 +1,337 @@
+{% extends "../base.html" %}
+
+{% block title %}Admin Dashboard - Grand Hotel{% endblock %}
+
+{% block extra_head %}
+<style>
+    .stats-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+    }
+    .stats-card .card-body {
+        padding: 1.5rem;
+    }
+    .stats-number {
+        font-size: 2rem;
+        font-weight: bold;
+    }
+    .chart-container {
+        position: relative;
+        height: 300px;
+        margin: 20px 0;
+    }
+    .conversation-item {
+        border-left: 4px solid #007bff;
+        margin-bottom: 10px;
+        padding: 10px;
+        background: #f8f9fa;
+    }
+    .conversation-item.high-priority {
+        border-left-color: #dc3545;
+    }
+    .conversation-item.escalated {
+        border-left-color: #ffc107;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="row">
+        <div class="col-12">
+            <h2><i class="fas fa-tachometer-alt me-2"></i>Admin Dashboard</h2>
+            <p class="text-muted">Real-time customer service analytics and monitoring</p>
+        </div>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card stats-card">
+                <div class="card-body text-center">
+                    <i class="fas fa-comments fa-2x mb-2"></i>
+                    <div class="stats-number" id="totalConversations">0</div>
+                    <div>Total Conversations</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card stats-card">
+                <div class="card-body text-center">
+                    <i class="fas fa-clock fa-2x mb-2"></i>
+                    <div class="stats-number" id="activeConversations">0</div>
+                    <div>Active Conversations</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card stats-card">
+                <div class="card-body text-center">
+                    <i class="fas fa-bolt fa-2x mb-2"></i>
+                    <div class="stats-number" id="avgResponseTime">0s</div>
+                    <div>Avg Response Time</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card stats-card">
+                <div class="card-body text-center">
+                    <i class="fas fa-star fa-2x mb-2"></i>
+                    <div class="stats-number" id="avgSatisfaction">0</div>
+                    <div>Avg Satisfaction</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="row mb-4">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-chart-line me-2"></i>Conversation Trends</h5>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="conversationChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-chart-pie me-2"></i>Channel Distribution</h5>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="channelChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="row">
+        <div class="col-lg-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-exclamation-triangle me-2"></i>Escalated Conversations</h5>
+                </div>
+                <div class="card-body" id="escalatedConversations">
+                    <p class="text-muted">No escalated conversations at the moment.</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-chart-bar me-2"></i>Intent Distribution</h5>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="intentChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+class AdminDashboard {
+    constructor() {
+        this.socket = null;
+        this.charts = {};
+        
+        this.connectSocket();
+        this.loadInitialData();
+        this.startAutoRefresh();
+    }
+    
+    connectSocket() {
+        this.socket = io();
+        
+        this.socket.emit('admin_join');
+        
+        this.socket.on('escalation_needed', (data) => {
+            this.handleEscalation(data);
+        });
+        
+        this.socket.on('new_message', (data) => {
+            this.updateRealTimeStats();
+        });
+    }
+    
+    async loadInitialData() {
+        try {
+            // Load stats
+            const statsResponse = await fetch('/admin/api/stats');
+            const stats = await statsResponse.json();
+            this.updateStats(stats);
+            
+            // Load chart data
+            const chartsResponse = await fetch('/admin/api/charts/conversations');
+            const chartData = await chartsResponse.json();
+            this.initializeCharts(chartData);
+            
+        } catch (error) {
+            console.error('Error loading dashboard data:', error);
+        }
+    }
+    
+    updateStats(stats) {
+        document.getElementById('totalConversations').textContent = stats.total_conversations;
+        document.getElementById('activeConversations').textContent = stats.active_conversations;
+        document.getElementById('avgResponseTime').textContent = stats.avg_response_time + 's';
+        document.getElementById('avgSatisfaction').textContent = stats.avg_satisfaction;
+    }
+    
+    initializeCharts(data) {
+        // Conversation trends chart
+        const conversationCtx = document.getElementById('conversationChart').getContext('2d');
+        this.charts.conversation = new Chart(conversationCtx, {
+            type: 'line',
+            data: data.daily_conversations,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Daily Conversation Trends'
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+        
+        // Channel distribution chart
+        const channelCtx = document.getElementById('channelChart').getContext('2d');
+        this.charts.channel = new Chart(channelCtx, {
+            type: 'doughnut',
+            data: data.channel_distribution,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Communication Channels'
+                    }
+                }
+            }
+        });
+        
+        // Intent distribution chart
+        const intentCtx = document.getElementById('intentChart').getContext('2d');
+        this.charts.intent = new Chart(intentCtx, {
+            type: 'bar',
+            data: data.intent_distribution,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Customer Intent Categories'
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+    }
+    
+    handleEscalation(data) {
+        const escalatedContainer = document.getElementById('escalatedConversations');
+        
+        const escalationDiv = document.createElement('div');
+        escalationDiv.className = 'conversation-item escalated';
+        escalationDiv.innerHTML = `
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <strong>Conversation ${data.conversation_id}</strong>
+                    <p class="mb-1">${data.message}</p>
+                    <small class="text-muted">
+                        Intent: ${data.intent} | Sentiment: ${data.sentiment}
+                    </small>
+                </div>
+                <div>
+                    <button class="btn btn-sm btn-primary" onclick="viewConversation('${data.conversation_id}')">
+                        View
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        escalatedContainer.appendChild(escalationDiv);
+        
+        // Show notification
+        this.showNotification('New escalation required', 'warning');
+    }
+    
+    async updateRealTimeStats() {
+        try {
+            const response = await fetch('/admin/api/stats');
+            const stats = await response.json();
+            this.updateStats(stats);
+        } catch (error) {
+            console.error('Error updating stats:', error);
+        }
+    }
+    
+    startAutoRefresh() {
+        // Refresh stats every 30 seconds
+        setInterval(() => {
+            this.updateRealTimeStats();
+        }, 30000);
+        
+        // Refresh charts every 5 minutes
+        setInterval(() => {
+            this.loadInitialData();
+        }, 300000);
+    }
+    
+    showNotification(message, type = 'info') {
+        // Create toast notification
+        const toast = document.createElement('div');
+        toast.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+        toast.style.cssText = 'top: 20px; right: 20px; z-index: 1050; min-width: 300px;';
+        toast.innerHTML = `
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        `;
+        
+        document.body.appendChild(toast);
+        
+        // Auto remove after 5 seconds
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.parentNode.removeChild(toast);
+            }
+        }, 5000);
+    }
+}
+
+function viewConversation(conversationId) {
+    window.open(`/admin/conversations?id=${conversationId}`, '_blank');
+}
+
+// Initialize dashboard when page loads
+document.addEventListener('DOMContentLoaded', () => {
+    new AdminDashboard();
+});
+</script>
+{% endblock %}

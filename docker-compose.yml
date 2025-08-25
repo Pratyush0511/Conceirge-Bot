@@ -1,0 +1,134 @@
+version: '3.8'
+
+services:
+  # MongoDB service
+  mongodb:
+    image: mongo:6
+    container_name: ai-customer-service-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=hotel_service
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - app-network
+
+  # Redis service
+  redis:
+    image: redis:7-alpine
+    container_name: ai-customer-service-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - app-network
+
+  # Main application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
+        VERSION: ${VERSION:-latest}
+        VCS_REF: ${VCS_REF:-$(git rev-parse --short HEAD)}
+    container_name: ai-customer-service-app
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - FLASK_DEBUG=False
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - MONGODB_URI=mongodb://mongodb:27017/hotel_service
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-here}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - HOTEL_NAME=${HOTEL_NAME:-Grand Hotel}
+      - HOTEL_PHONE=${HOTEL_PHONE:-+1234567890}
+      - HOTEL_EMAIL=${HOTEL_EMAIL:-info@grandhotel.com}
+      - HOTEL_ADDRESS=${HOTEL_ADDRESS:-123 Main St, City, State 12345}
+    volumes:
+      - app_data:/app/instance
+      - app_uploads:/app/uploads
+      - app_logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - app-network
+
+  # Celery worker
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
+        VERSION: ${VERSION:-latest}
+        VCS_REF: ${VCS_REF:-$(git rev-parse --short HEAD)}
+    container_name: ai-customer-service-celery
+    restart: unless-stopped
+    environment:
+      - FLASK_ENV=production
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - MONGODB_URI=mongodb://mongodb:27017/hotel_service
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-here}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    volumes:
+      - app_data:/app/instance
+      - app_uploads:/app/uploads
+      - app_logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["celery", "-A", "celery_worker.celery", "worker", "--loglevel=info"]
+    networks:
+      - app-network
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  app_data:
+    driver: local
+  app_uploads:
+    driver: local
+  app_logs:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

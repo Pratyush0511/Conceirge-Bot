@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+
+{% block title %}Grand Hotel - Chat Support{% endblock %}
+
+{% block extra_head %}
+<style>
+    .chat-container {
+        height: 80vh;
+        display: flex;
+        flex-direction: column;
+    }
+    .chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px;
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 10px 10px 0 0;
+    }
+    .message {
+        margin-bottom: 15px;
+        display: flex;
+    }
+    .message.user {
+        justify-content: flex-end;
+    }
+    .message.ai {
+        justify-content: flex-start;
+    }
+    .message-bubble {
+        max-width: 70%;
+        padding: 12px 16px;
+        border-radius: 18px;
+        word-wrap: break-word;
+    }
+    .message.user .message-bubble {
+        background: #007bff;
+        color: white;
+    }
+    .message.ai .message-bubble {
+        background: white;
+        border: 1px solid #dee2e6;
+        color: #333;
+    }
+    .chat-input {
+        border-radius: 0 0 10px 10px;
+        border-top: none;
+    }
+    .typing-indicator {
+        display: none;
+        padding: 10px;
+        font-style: italic;
+        color: #6c757d;
+    }
+    .connection-status {
+        padding: 5px 10px;
+        border-radius: 5px;
+        font-size: 0.8em;
+        margin-bottom: 10px;
+    }
+    .connected {
+        background: #d4edda;
+        color: #155724;
+    }
+    .disconnected {
+        background: #f8d7da;
+        color: #721c24;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">
+                        <i class="fas fa-comments me-2"></i>Customer Service Chat
+                    </h5>
+                    <div id="connectionStatus" class="connection-status disconnected">
+                        <i class="fas fa-circle me-1"></i>Connecting...
+                    </div>
+                </div>
+                
+                <div class="chat-container">
+                    <div id="chatMessages" class="chat-messages">
+                        <div class="message ai">
+                            <div class="message-bubble">
+                                <strong>AI Assistant:</strong> Welcome to Grand Hotel! I'm here to help you with any questions or requests. How can I assist you today?
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="typingIndicator" class="typing-indicator">
+                        <i class="fas fa-ellipsis-h"></i> AI is typing...
+                    </div>
+                    
+                    <div class="input-group chat-input">
+                        <input type="text" id="messageInput" class="form-control" 
+                               placeholder="Type your message here..." 
+                               maxlength="500">
+                        <button id="sendButton" class="btn btn-primary" type="button">
+                            <i class="fas fa-paper-plane"></i> Send
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- User Context Form -->
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h6 class="mb-0">Guest Information (Optional)</h6>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <input type="text" id="guestName" class="form-control form-control-sm" 
+                                   placeholder="Your Name">
+                        </div>
+                        <div class="col-md-6">
+                            <input type="text" id="roomNumber" class="form-control form-control-sm" 
+                                   placeholder="Room Number">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+class ChatInterface {
+    constructor() {
+        this.socket = null;
+        this.sessionId = '{{ session_id }}';
+        this.conversationId = null;
+        this.isTyping = false;
+        
+        this.initializeElements();
+        this.connectSocket();
+        this.bindEvents();
+    }
+    
+    initializeElements() {
+        this.messagesContainer = document.getElementById('chatMessages');
+        this.messageInput = document.getElementById('messageInput');
+        this.sendButton = document.getElementById('sendButton');
+        this.typingIndicator = document.getElementById('typingIndicator');
+        this.connectionStatus = document.getElementById('connectionStatus');
+        this.guestName = document.getElementById('guestName');
+        this.roomNumber = document.getElementById('roomNumber');
+    }
+    
+    connectSocket() {
+        this.socket = io({
+            query: { session_id: this.sessionId }
+        });
+        
+        this.socket.on('connect', () => {
+            this.updateConnectionStatus(true);
+        });
+        
+        this.socket.on('disconnect', () => {
+            this.updateConnectionStatus(false);
+        });
+        
+        this.socket.on('connected', (data) => {
+            this.sessionId = data.session_id;
+        });
+        
+        this.socket.on('ai_response', (data) => {
+            this.hideTyping();
+            this.addMessage('ai', data.message.content);
+            this.conversationId = data.conversation_id;
+            
+            if (data.escalate) {
+                this.showEscalationNotice();
+            }
+        });
+        
+        this.socket.on('error', (data) => {
+            this.hideTyping();
+            this.addMessage('system', 'Error: ' + data.message, 'error');
+        });
+    }
+    
+    bindEvents() {
+        this.sendButton.addEventListener('click', () => this.sendMessage());
+        
+        this.messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                this.sendMessage();
+            } else {
+                this.handleTyping();
+            }
+        });
+        
+        this.messageInput.addEventListener('input', () => {
+            this.handleTyping();
+        });
+    }
+    
+    sendMessage() {
+        const message = this.messageInput.value.trim();
+        if (!message) return;
+        
+        this.addMessage('user', message);
+        this.messageInput.value = '';
+        this.showTyping();
+        
+        const userContext = {
+            name: this.guestName.value,
+            room_number: this.roomNumber.value
+        };
+        
+        this.socket.emit('send_message', {
+            message: message,
+            session_id: this.sessionId,
+            user_context: userContext
+        });
+    }
+    
+    addMessage(sender, content, type = 'normal') {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${sender}`;
+        
+        let bubbleClass = 'message-bubble';
+        if (type === 'error') bubbleClass += ' bg-danger text-white';
+        
+        const bubble = document.createElement('div');
+        bubble.className = bubbleClass;
+        
+        if (sender === 'ai') {
+            bubble.innerHTML = `<strong>AI Assistant:</strong> ${content}`;
+        } else if (sender === 'system') {
+            bubble.innerHTML = `<strong>System:</strong> ${content}`;
+        } else {
+            bubble.textContent = content;
+        }
+        
+        messageDiv.appendChild(bubble);
+        this.messagesContainer.appendChild(messageDiv);
+        this.scrollToBottom();
+    }
+    
+    showTyping() {
+        this.typingIndicator.style.display = 'block';
+        this.scrollToBottom();
+    }
+    
+    hideTyping() {
+        this.typingIndicator.style.display = 'none';
+    }
+    
+    handleTyping() {
+        if (!this.isTyping && this.conversationId) {
+            this.isTyping = true;
+            this.socket.emit('typing', {
+                conversation_id: this.conversationId,
+                typing: true
+            });
+            
+            setTimeout(() => {
+                this.isTyping = false;
+                this.socket.emit('typing', {
+                    conversation_id: this.conversationId,
+                    typing: false
+                });
+            }, 2000);
+        }
+    }
+    
+    updateConnectionStatus(connected) {
+        if (connected) {
+            this.connectionStatus.className = 'connection-status connected';
+            this.connectionStatus.innerHTML = '<i class="fas fa-circle me-1"></i>Connected';
+        } else {
+            this.connectionStatus.className = 'connection-status disconnected';
+            this.connectionStatus.innerHTML = '<i class="fas fa-circle me-1"></i>Disconnected';
+        }
+    }
+    
+    showEscalationNotice() {
+        this.addMessage('system', 
+            'Your request has been flagged for human assistance. A customer service representative will be with you shortly.',
+            'info'
+        );
+    }
+    
+    scrollToBottom() {
+        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+    }
+}
+
+// Initialize chat when page loads
+document.addEventListener('DOMContentLoaded', () => {
+    new ChatInterface();
+});
+</script>
+{% endblock %}

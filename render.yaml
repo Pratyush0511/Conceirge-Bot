@@ -1,0 +1,76 @@
+services:
+  # Web Service
+  - type: web
+    name: ai-customer-service
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT start:app"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FLASK_ENV
+        value: production
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+
+  # Background Worker (Celery)
+  - type: worker
+    name: ai-customer-service-worker
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "celery -A celery_worker.celery worker --loglevel=info"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: ai-customer-service
+          property: SECRET_KEY
+      - key: FLASK_ENV
+        value: production
+      - key: OPENAI_API_KEY
+        sync: false
+
+  # Redis
+  - type: redis
+    name: redis
+    ipAllowList: []
+
+  # PostgreSQL Database
+  - type: pserv
+    name: postgres
+    env: docker
+    plan: starter
+    databaseName: ai_customer_service
+    user: ai_user

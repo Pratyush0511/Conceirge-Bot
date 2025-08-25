@@ -1,0 +1,358 @@
+{% extends "../base.html" %}
+
+{% block title %}Conversations - Admin Dashboard{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="row">
+        <div class="col-12">
+            <h2><i class="fas fa-comments me-2"></i>Conversation Management</h2>
+            <p class="text-muted">Monitor and manage customer conversations</p>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <select class="form-select" id="statusFilter">
+                <option value="">All Status</option>
+                <option value="active">Active</option>
+                <option value="resolved">Resolved</option>
+                <option value="escalated">Escalated</option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <select class="form-select" id="channelFilter">
+                <option value="">All Channels</option>
+                <option value="web">Web Chat</option>
+                <option value="voice">Voice</option>
+                <option value="sms">SMS</option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <input type="date" class="form-control" id="dateFilter">
+        </div>
+        <div class="col-md-3">
+            <button class="btn btn-primary" onclick="applyFilters()">
+                <i class="fas fa-filter me-1"></i>Apply Filters
+            </button>
+        </div>
+    </div>
+
+    <!-- Conversations List -->
+    <div class="card">
+        <div class="card-header">
+            <h5>Recent Conversations</h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover" id="conversationsTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Channel</th>
+                            <th>Status</th>
+                            <th>Priority</th>
+                            <th>Category</th>
+                            <th>Sentiment</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="conversationsTableBody">
+                        <!-- Conversations will be loaded here -->
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Pagination -->
+            <nav>
+                <ul class="pagination justify-content-center" id="pagination">
+                    <!-- Pagination will be generated here -->
+                </ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+<!-- Conversation Modal -->
+<div class="modal fade" id="conversationModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Conversation Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="conversationMessages" style="max-height: 400px; overflow-y: auto;">
+                    <!-- Messages will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-warning" onclick="escalateConversation()">
+                    <i class="fas fa-exclamation-triangle me-1"></i>Escalate
+                </button>
+                <button type="button" class="btn btn-success" onclick="resolveConversation()">
+                    <i class="fas fa-check me-1"></i>Resolve
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+class ConversationManager {
+    constructor() {
+        this.currentPage = 1;
+        this.currentConversationId = null;
+        this.socket = null;
+        
+        this.connectSocket();
+        this.loadConversations();
+    }
+    
+    connectSocket() {
+        this.socket = io();
+        this.socket.emit('admin_join');
+        
+        this.socket.on('new_message', (data) => {
+            this.updateConversationInTable(data.conversation_id);
+        });
+        
+        this.socket.on('escalation_needed', (data) => {
+            this.loadConversations(); // Refresh the list
+            this.showNotification('New escalation required', 'warning');
+        });
+    }
+    
+    async loadConversations(page = 1) {
+        try {
+            const params = new URLSearchParams({
+                page: page,
+                per_page: 20
+            });
+            
+            // Add filters
+            const status = document.getElementById('statusFilter').value;
+            const channel = document.getElementById('channelFilter').value;
+            
+            if (status) params.append('status', status);
+            if (channel) params.append('channel', channel);
+            
+            const response = await fetch(`/api/conversations?${params}`);
+            const data = await response.json();
+            
+            this.renderConversationsTable(data.conversations);
+            this.renderPagination(data.pages, data.current_page);
+            
+        } catch (error) {
+            console.error('Error loading conversations:', error);
+        }
+    }
+    
+    renderConversationsTable(conversations) {
+        const tbody = document.getElementById('conversationsTableBody');
+        tbody.innerHTML = '';
+        
+        conversations.forEach(conv => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${conv.id.substring(0, 8)}...</td>
+                <td><span class="badge bg-info">${conv.channel}</span></td>
+                <td><span class="badge bg-${this.getStatusColor(conv.status)}">${conv.status}</span></td>
+                <td><span class="badge bg-${this.getPriorityColor(conv.priority)}">${conv.priority}</span></td>
+                <td>${conv.category || 'N/A'}</td>
+                <td><span class="badge bg-${this.getSentimentColor(conv.sentiment)}">${conv.sentiment || 'N/A'}</span></td>
+                <td>${new Date(conv.created_at).toLocaleString()}</td>
+                <td>
+                    <button class="btn btn-sm btn-primary" onclick="viewConversation('${conv.id}')">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+    
+    renderPagination(totalPages, currentPage) {
+        const pagination = document.getElementById('pagination');
+        pagination.innerHTML = '';
+        
+        for (let i = 1; i <= totalPages; i++) {
+            const li = document.createElement('li');
+            li.className = `page-item ${i === currentPage ? 'active' : ''}`;
+            li.innerHTML = `<a class="page-link" href="#" onclick="conversationManager.loadConversations(${i})">${i}</a>`;
+            pagination.appendChild(li);
+        }
+    }
+    
+    async viewConversation(conversationId) {
+        this.currentConversationId = conversationId;
+        
+        try {
+            const response = await fetch(`/api/conversations/${conversationId}/messages`);
+            const data = await response.json();
+            
+            this.renderConversationMessages(data.messages);
+            
+            const modal = new bootstrap.Modal(document.getElementById('conversationModal'));
+            modal.show();
+            
+        } catch (error) {
+            console.error('Error loading conversation messages:', error);
+        }
+    }
+    
+    renderConversationMessages(messages) {
+        const container = document.getElementById('conversationMessages');
+        container.innerHTML = '';
+        
+        messages.forEach(msg => {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${msg.sender_type} mb-3`;
+            
+            const senderLabel = msg.sender_type === 'ai' ? 'AI Assistant' : 
+                               msg.sender_type === 'agent' ? 'Agent' : 'Customer';
+            
+            messageDiv.innerHTML = `
+                <div class="d-flex justify-content-${msg.sender_type === 'user' ? 'end' : 'start'}">
+                    <div class="message-bubble p-3 rounded" style="max-width: 70%; background: ${msg.sender_type === 'user' ? '#007bff' : '#f8f9fa'}; color: ${msg.sender_type === 'user' ? 'white' : 'black'};">
+                        <strong>${senderLabel}:</strong><br>
+                        ${msg.content}
+                        <br><small class="text-muted">${new Date(msg.created_at).toLocaleString()}</small>
+                    </div>
+                </div>
+            `;
+            
+            container.appendChild(messageDiv);
+        });
+        
+        container.scrollTop = container.scrollHeight;
+    }
+    
+    async escalateConversation() {
+        if (!this.currentConversationId) return;
+        
+        try {
+            const response = await fetch(`/api/conversations/${this.currentConversationId}/escalate`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    agent_id: 'admin'
+                })
+            });
+            
+            if (response.ok) {
+                this.showNotification('Conversation escalated successfully', 'success');
+                this.loadConversations();
+                bootstrap.Modal.getInstance(document.getElementById('conversationModal')).hide();
+            }
+            
+        } catch (error) {
+            console.error('Error escalating conversation:', error);
+        }
+    }
+    
+    async resolveConversation() {
+        if (!this.currentConversationId) return;
+        
+        const satisfaction = prompt('Enter satisfaction score (1-5):');
+        if (!satisfaction) return;
+        
+        try {
+            const response = await fetch(`/api/conversations/${this.currentConversationId}/resolve`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    satisfaction_score: parseInt(satisfaction)
+                })
+            });
+            
+            if (response.ok) {
+                this.showNotification('Conversation resolved successfully', 'success');
+                this.loadConversations();
+                bootstrap.Modal.getInstance(document.getElementById('conversationModal')).hide();
+            }
+            
+        } catch (error) {
+            console.error('Error resolving conversation:', error);
+        }
+    }
+    
+    getStatusColor(status) {
+        const colors = {
+            'active': 'primary',
+            'resolved': 'success',
+            'escalated': 'warning'
+        };
+        return colors[status] || 'secondary';
+    }
+    
+    getPriorityColor(priority) {
+        const colors = {
+            'low': 'success',
+            'normal': 'primary',
+            'high': 'warning',
+            'urgent': 'danger'
+        };
+        return colors[priority] || 'secondary';
+    }
+    
+    getSentimentColor(sentiment) {
+        const colors = {
+            'positive': 'success',
+            'neutral': 'secondary',
+            'negative': 'danger'
+        };
+        return colors[sentiment] || 'secondary';
+    }
+    
+    showNotification(message, type = 'info') {
+        const toast = document.createElement('div');
+        toast.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+        toast.style.cssText = 'top: 20px; right: 20px; z-index: 1050; min-width: 300px;';
+        toast.innerHTML = `
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        `;
+        
+        document.body.appendChild(toast);
+        
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.parentNode.removeChild(toast);
+            }
+        }, 5000);
+    }
+}
+
+function applyFilters() {
+    conversationManager.loadConversations(1);
+}
+
+function viewConversation(conversationId) {
+    conversationManager.viewConversation(conversationId);
+}
+
+function escalateConversation() {
+    conversationManager.escalateConversation();
+}
+
+function resolveConversation() {
+    conversationManager.resolveConversation();
+}
+
+// Initialize when page loads
+let conversationManager;
+document.addEventListener('DOMContentLoaded', () => {
+    conversationManager = new ConversationManager();
+});
+</script>
+{% endblock %}
